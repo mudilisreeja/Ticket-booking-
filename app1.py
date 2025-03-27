@@ -19,7 +19,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            return jsonify({"message": "Please log in to access this resource!"}), 401
+            return jsonify({"message": "Please log in to book the Ticket!"}), 401
         return f(*args, **kwargs)
     return decorated_function
 
