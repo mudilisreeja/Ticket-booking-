@@ -1,21 +1,30 @@
-import React, { useContext } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AuthContext } from '../context/AuthContext1';
+import { useAuth } from '../Context/AuthContext1';
 
 const Navbar = () => {
-  const { currentUser, logout } = useContext(AuthContext);
+  const { user, loading, logout } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/'); 
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
   };
+
+  if (loading) {
+    return null; 
+  }
 
   return (
     <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
       <div className="container">
         <Link className="navbar-brand" to="/">Ticket Booking</Link>
-        <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <button 
+          className="navbar-toggler" 
+          type="button" 
+          data-bs-toggle="collapse" 
+          data-bs-target="#navbarNav"
+        >
           <span className="navbar-toggler-icon"></span>
         </button>
         <div className="collapse navbar-collapse" id="navbarNav">
@@ -23,14 +32,17 @@ const Navbar = () => {
             <li className="nav-item">
               <Link className="nav-link" to="/">Home</Link>
             </li>
-            {currentUser ? (
+            {user ? (
               <>
                 <li className="nav-item">
-                  <Link className="nav-link" to="/my-bookings">My Bookings</Link>
+                  <Link className="nav-link" to="/book">Book Ticket</Link>
                 </li>
                 <li className="nav-item">
-                  <button
-                    className="btn btn-link nav-link"
+                  <Link className="nav-link" to="/mybookings">My Bookings</Link>
+                </li>
+                <li className="nav-item">
+                  <button 
+                    className="nav-link btn btn-link" 
                     onClick={handleLogout}
                   >
                     Logout
@@ -45,7 +57,6 @@ const Navbar = () => {
                 <li className="nav-item">
                   <Link className="nav-link" to="/register">Register</Link>
                 </li>
-                
               </>
             )}
           </ul>

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
+import { cities, priceMatrix } from '../data/cities';
+import PaymentModal from '../Components/PaymentModal';
 
 const BookingForm = () => {
   const navigate = useNavigate();
@@ -11,7 +13,7 @@ const BookingForm = () => {
     travelDate: new Date(),
     adults: 1,
     children: 0,
-    totalPrice: 500,
+    totalPrice: 0,
   });
 
   const [passengers, setPassengers] = useState([
@@ -20,16 +22,57 @@ const BookingForm = () => {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [currentBooking, setCurrentBooking] = useState(null);
+
+  // Calculate total price when cities or passenger count changes
+  useEffect(() => {
+    if (formData.startsFrom && formData.destination) {
+      const routeKey = `${formData.startsFrom}-${formData.destination}`;
+      const basePrice = priceMatrix[routeKey] || 0;
+      const totalPassengers = formData.adults + formData.children;
+      const totalPrice = basePrice * totalPassengers;
+      setFormData(prev => ({ ...prev, totalPrice }));
+    }
+  }, [formData.startsFrom, formData.destination, formData.adults, formData.children]);
+
+  // Validation helper functions
+  const validateAadhar = (aadhar) => {
+    const aadharRegex = /^\d{12}$/;
+    return aadharRegex.test(aadhar);
+  };
+
+  const validatePassport = (passport) => {
+    const passportRegex = /^[A-Z]{1,2}\d{7}$/;
+    return passportRegex.test(passport);
+  };
+
+  const validateDrivingLicense = (license) => {
+    const licenseRegex = /^[A-Z]{2}\d{13}$/;
+    return licenseRegex.test(license);
+  };
 
   useEffect(() => {
-    const userId = localStorage.getItem('user_id');
-    if (!userId) {
-      navigate('/login');
-    }
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/check_session', {
+          credentials: 'include'
+        });
+        const data = await response.json();
+        
+        if (!data.logged_in) {
+          navigate('/login');
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        navigate('/login');
+      }
+    };
+
+    checkAuth();
   }, [navigate]);
 
   useEffect(() => {
-    // Update passenger list based on number of adults and children
     const newPassengers = [];
     
     // Add adult passengers
@@ -59,47 +102,72 @@ const BookingForm = () => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData({
-      ...formData,
+    setFormData(prevData => ({
+      ...prevData,
       [name]: value,
-    });
+    }));
   };
 
   const handleTravelDateChange = (date) => {
-    setFormData({
-      ...formData,
+    setFormData(prevData => ({
+      ...prevData,
       travelDate: date,
-    });
+    }));
   };
 
   const handlePassengerChange = (index, e) => {
     const { name, value } = e.target;
-    const updatedPassengers = [...passengers];
-    updatedPassengers[index] = {
-      ...updatedPassengers[index],
-      [name]: value
-    };
-    setPassengers(updatedPassengers);
+    setPassengers(prevPassengers => {
+      const updatedPassengers = [...prevPassengers];
+      updatedPassengers[index] = {
+        ...updatedPassengers[index],
+        [name]: value
+      };
+      return updatedPassengers;
+    });
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
-    // Enhanced validation
     const validationErrors = [];
 
-    // Validate passengers
+    // Passenger validation
     passengers.forEach((passenger, index) => {
-      if (!passenger.name) {
+      if (!passenger.name.trim()) {
         validationErrors.push(`Passenger ${index + 1} name is required`);
       }
-      if (!passenger.age) {
-        validationErrors.push(`Passenger ${index + 1} age is required`);
+
+      const age = parseInt(passenger.age);
+      if (isNaN(age) || age < 0 || age > 120) {
+        validationErrors.push(`Passenger ${index + 1} age is invalid`);
+      }
+
+      if (passenger.isAdult) {
+        switch(passenger.idType) {
+          case 'aadhar':
+            if (!validateAadhar(passenger.idNumber)) {
+              validationErrors.push(`Passenger ${index + 1} Aadhar number is invalid`);
+            }
+            break;
+          case 'passport':
+            if (!validatePassport(passenger.idNumber)) {
+              validationErrors.push(`Passenger ${index + 1} Passport number is invalid`);
+            }
+            break;
+          case 'driving_license':
+            if (!validateDrivingLicense(passenger.idNumber)) {
+              validationErrors.push(`Passenger ${index + 1} Driving License number is invalid`);
+            }
+            break;
+          default:
+            break;
+        }
       }
     });
 
-    // Validate travel details
+    // Travel details validation
     if (!formData.startsFrom) {
       validationErrors.push('Starting location is required');
     }
@@ -113,32 +181,66 @@ const BookingForm = () => {
     }
 
     setLoading(true);
+
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/book', {
+      console.log('Submitting booking with data:', {
+        ...formData,
+        travelDate: formData.travelDate.toISOString().split('T')[0],
+        passengers: passengers.map(p => ({
+          ...p,
+          idNumber: (p.isAdult || (parseInt(p.age) > 5)) ? p.idNumber : ''
+        }))
+      });
+
+      const response = await fetch('http://localhost:5000/api/book', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}` // Add token for authentication
+          'Accept': 'application/json'
         },
+        credentials: 'include',
+        mode: 'cors',
         body: JSON.stringify({
           ...formData,
           travelDate: formData.travelDate.toISOString().split('T')[0],
-          passengers,
-        }),
+          passengers: passengers.map(p => ({
+            ...p,
+            idNumber: (p.isAdult || (parseInt(p.age) > 5)) ? p.idNumber : ''
+          }))
+        })
       });
 
       const data = await response.json();
+      console.log('Server response:', data);
 
       if (!response.ok) {
         throw new Error(data.message || 'Failed to create booking');
       }
 
-      navigate(`/ticket/${data.booking_id}`);
+      // Instead of showing payment modal, directly navigate to bookings
+      alert('Booking created successfully!');
+      navigate('/mybookings');
     } catch (err) {
-      setError(err.message);
+      console.error('Booking error details:', {
+        message: err.message,
+        stack: err.stack,
+        formData,
+        passengers
+      });
+      
+      setError(err.message || 'Failed to create booking. Please try again.');
+      
+      if (err.message.includes('Session expired') || err.message.includes('401')) {
+        navigate('/login');
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePaymentSuccess = () => {
+    alert('Payment successful!');
+    navigate('/mybookings');
   };
 
   return (
@@ -150,29 +252,52 @@ const BookingForm = () => {
           <div className="row mb-3">
             <div className="col-md-6">
               <label htmlFor="startsFrom" className="form-label">From</label>
-              <input
-                type="text"
-                className="form-control"
+              <select
+                className="form-select"
                 id="startsFrom"
                 name="startsFrom"
                 value={formData.startsFrom}
                 onChange={handleChange}
                 required
-              />
+              >
+                <option value="">Select Departure City</option>
+                {cities.map(city => (
+                  <option key={city.id} value={city.name}>
+                    {city.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="col-md-6">
               <label htmlFor="destination" className="form-label">To</label>
-              <input
-                type="text"
-                className="form-control"
+              <select
+                className="form-select"
                 id="destination"
                 name="destination"
                 value={formData.destination}
                 onChange={handleChange}
                 required
-              />
+              >
+                <option value="">Select Destination City</option>
+                {cities.map(city => (
+                  <option key={city.id} value={city.name}>
+                    {city.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
+
+          {/* Price Display */}
+          {formData.startsFrom && formData.destination && (
+            <div className="alert alert-info mb-3">
+              <h5>Price Details:</h5>
+              <p className="mb-1">Base Price per Person: ₹{priceMatrix[`${formData.startsFrom}-${formData.destination}`]}</p>
+              <p className="mb-1">Total Passengers: {Number(formData.adults) + Number(formData.children)}</p>
+              <p className="mb-0">Total Price: ₹{formData.totalPrice}</p>
+            </div>
+          )}
+
           <div className="row mb-3">
             <div className="col-md-6">
               <label htmlFor="travelDate" className="form-label">Travel Date</label>
@@ -210,7 +335,7 @@ const BookingForm = () => {
                 value={formData.children}
                 onChange={handleChange}
               >
-                {[...Array(6).keys()].map((num) => (
+                {[0, 1, 2, 3, 4, 5].map((num) => (
                   <option key={num} value={num}>
                     {num}
                   </option>
@@ -249,6 +374,9 @@ const BookingForm = () => {
                         min="0"
                         max="120"
                       />
+                      {passenger.age && parseInt(passenger.age) <= 5 && (
+                        <small className="text-muted">No ID required for children 5 and under</small>
+                      )}
                     </div>
                     <div className="col-md-4">
                       <label className="form-label">ID Type</label>
@@ -257,6 +385,7 @@ const BookingForm = () => {
                         name="idType"
                         value={passenger.idType}
                         onChange={(e) => handlePassengerChange(index, e)}
+                        disabled={!passenger.isAdult && parseInt(passenger.age) <= 5}
                       >
                         <option value="aadhar">Aadhar Card</option>
                         <option value="passport">Passport</option>
@@ -273,8 +402,16 @@ const BookingForm = () => {
                         name="idNumber"
                         value={passenger.idNumber}
                         onChange={(e) => handlePassengerChange(index, e)}
-                        required
+                        required={passenger.isAdult || (passenger.age && parseInt(passenger.age) > 5)}
+                        disabled={!passenger.isAdult && parseInt(passenger.age) <= 5}
                       />
+                      {passenger.isAdult && (
+                        <small className="text-muted">
+                          {passenger.idType === 'aadhar' && "12-digit Aadhar number"}
+                          {passenger.idType === 'passport' && "Passport format: 1-2 letters followed by 7 digits"}
+                          {passenger.idType === 'driving_license' && "Driving License format: 2 letters followed by 13 digits"}
+                        </small>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -291,6 +428,14 @@ const BookingForm = () => {
           </button>
         </form>
       </div>
+
+      {showPaymentModal && currentBooking && (
+        <PaymentModal
+          booking={currentBooking}
+          onClose={() => setShowPaymentModal(false)}
+          onSuccess={handlePaymentSuccess}
+        />
+      )}
     </div>
   );
 };

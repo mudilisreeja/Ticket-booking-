@@ -1,53 +1,63 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { useAuth } from '../Context/AuthContext1';
 
 function MyBookings() {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   // Fetch bookings on component mount
   useEffect(() => {
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+
     const fetchBookings = async () => {
       try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          navigate('/login');
-          return;
-        }
-
-        const response = await axios.get('http://localhost:5000/api/my_bookings', {
+        const response = await fetch('http://localhost:5000/api/mybookings', {
+          method: 'GET',
           headers: {
-            'Authorization': `Bearer ${token}`
-          }
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          credentials: 'include',
+          mode: 'cors'
         });
-        setBookings(response.data);
-        setLoading(false);
-      } catch (err) {
-        setError('Failed to load bookings');
-        setLoading(false);
 
-        // Redirect to login if unauthorized
-        if (err.response && err.response.status === 401) {
-          navigate('/login');
+        if (!response.ok) {
+          if (response.status === 401) {
+            navigate('/login');
+            return;
+          }
+          throw new Error('Failed to fetch bookings');
         }
+
+        const data = await response.json();
+        setBookings(data);
+      } catch (error) {
+        console.error('Error fetching bookings:', error);
+        setError(error.message);
+      } finally {
+        setLoading(false);
       }
     };
 
     fetchBookings();
-  }, [navigate]);
+  }, [navigate, user]);
 
   // Handle ticket download
   const handleDownloadTicket = async (bookingId) => {
     try {
-      const token = localStorage.getItem('token');
       const response = await fetch(`http://localhost:5000/api/bookings/${bookingId}/download`, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Accept': 'application/pdf'
+        },
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -64,10 +74,13 @@ function MyBookings() {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
     } catch (err) {
-      // Improved error handling
       console.error('Download error:', err);
-      alert(`Error downloading ticket: ${err.message}`);
+      setError('Failed to download ticket');
+      if (err.message.includes('401')) {
+        navigate('/login');
+      }
     }
   };
 
@@ -81,12 +94,13 @@ function MyBookings() {
     }
 
     try {
-      const token = localStorage.getItem('token');
       const response = await fetch(`http://localhost:5000/api/bookings/${bookingId}/cancel`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -100,97 +114,78 @@ function MyBookings() {
       // Improved error handling
       console.error('Cancel booking error:', err);
       alert(`Error canceling booking: ${err.message}`);
+      if (err.message.includes('401')) {
+        navigate('/login');
+      }
     }
   };
 
-  // Render loading state
   if (loading) {
     return (
-      <div className="d-flex justify-content-center align-items-center" style={{height: '100vh'}}>
-        <div className="spinner-border text-primary" role="status">
-          <span className="visually-hidden">Loading...</span>
+      <div className="container mt-4">
+        <div className="d-flex justify-content-center">
+          <div className="spinner-border text-primary" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </div>
         </div>
       </div>
     );
   }
 
-  // Render error state
   if (error) {
     return (
-      <div className="alert alert-danger text-center" role="alert">
-        {error}
-        <br />
-        <button 
-          className="btn btn-primary mt-3" 
-          onClick={() => window.location.reload()}
-        >
-          Try Again
-        </button>
+      <div className="container mt-4">
+        <div className="alert alert-danger">{error}</div>
       </div>
     );
   }
 
   return (
     <div className="container mt-4">
-      <div className="card">
-        <div className="card-header">
-          <h3 className="mb-0">My Bookings</h3>
+      <h2 className="mb-4">My Bookings</h2>
+      {bookings.length === 0 ? (
+        <div className="alert alert-info">
+          You haven't made any bookings yet.
+          <Link to="/book" className="alert-link ms-2">Book a ticket now!</Link>
         </div>
-        <div className="card-body">
-          {bookings.length === 0 ? (
-            <div className="text-center">
-              <p>You don't have any bookings yet.</p>
-              <Link to="/booking" className="btn btn-primary">
-                Book a Ticket Now
-              </Link>
+      ) : (
+        <div className="row">
+          {bookings.map((booking) => (
+            <div key={booking.id} className="col-md-6 mb-4">
+              <div className="card">
+                <div className="card-body">
+                  <h5 className="card-title">Booking #{booking.id}</h5>
+                  <p className="card-text">
+                    <strong>From:</strong> {booking.starts_from}<br />
+                    <strong>To:</strong> {booking.destination}<br />
+                    <strong>Date:</strong> {new Date(booking.travel_date).toLocaleDateString()}<br />
+                    <strong>Total Price:</strong> ₹{booking.total_price}<br />
+                    <strong>Status:</strong> <span className={`badge ${booking.status === 'confirmed' ? 'bg-success' : 'bg-warning'}`}>
+                      {booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+                    </span>
+                  </p>
+                  <div className="d-flex flex-column">
+                    <button
+                      className="btn btn-primary mb-2"
+                      onClick={() => handleDownloadTicket(booking.id)}
+                    >
+                      Download Ticket
+                    </button>
+                    {booking.status !== 'cancelled' && (
+                      <button
+                        className="btn btn-danger"
+                        onClick={() => handleCancelBooking(booking.id)}
+                      >
+                        Cancel Booking
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
-          ) : (
-            <div className="table-responsive">
-              <table className="table table-striped table-hover">
-                <thead className="table-light">
-                  <tr>
-                    <th>Booking ID</th>
-                    <th>From</th>
-                    <th>To</th>
-                    <th>Travel Date</th>
-                    <th>Passengers</th>
-                    <th>Total Price (₹)</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bookings.map((booking) => (
-                    <tr key={booking.id}>
-                      <td>{booking.id}</td>
-                      <td>{booking.startsFrom}</td>
-                      <td>{booking.destination}</td>
-                      <td>{new Date(booking.travelDate).toLocaleDateString()}</td>
-                      <td>{booking.passengers.length}</td>
-                      <td>₹{booking.totalPrice.toLocaleString()}</td>
-                      <td>
-                        <div className="d-flex flex-column">
-                          <button
-                            className="btn btn-sm btn-success mb-2"
-                            onClick={() => handleDownloadTicket(booking.id)}
-                          >
-                            Download Ticket
-                          </button>
-                          <button
-                            className="btn btn-sm btn-danger"
-                            onClick={() => handleCancelBooking(booking.id)}
-                          >
-                            Cancel Booking
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }

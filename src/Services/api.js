@@ -58,7 +58,7 @@ export const apiService = {
 
   cancelBooking: async (id, token) => {
     const response = await fetch(`${API_URL}/bookings/${id}/cancel`, {
-      method: 'PUT',
+      method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${token}`,
       },

@@ -1,9 +1,9 @@
-import React, { useContext } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
-import { AuthContext } from '../Context/AuthContext1';
+import { useAuth } from '../Context/AuthContext1';
 
 const Home = () => {
-  const { currentUser } = useContext(AuthContext);
+  const { user } = useAuth();
 
   return (
     <div className="container">
@@ -16,8 +16,8 @@ const Home = () => {
         <p className="text-secondary">
           Start by searching for your destination and book your tickets in just a few clicks.
         </p>
-        {currentUser ? (
-          <Link to="/booking" className="btn btn-primary btn-lg">
+        {user ? (
+          <Link to="/book" className="btn btn-primary btn-lg">
             Book a Ticket
           </Link>
         ) : (
