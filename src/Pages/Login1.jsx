@@ -39,15 +39,10 @@ const Login = () => {
     setError('');
 
     try {
-      const result = await login(email, password);
-      
-      if (result.success) {
-        setEmail('');
-        setPassword('');
-        // Navigation is handled by the login function
-      } else {
-        setError(result.error || 'Login failed');
-      }
+      await login(email, password);
+      setEmail('');
+      setPassword('');
+      // Navigation is handled by the login function
     } catch (err) {
       console.error('Login error:', err);
       setError(err.message || 'An unexpected error occurred');

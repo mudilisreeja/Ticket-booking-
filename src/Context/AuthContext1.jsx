@@ -1,7 +1,7 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-export const AuthContext = createContext(null);
+const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -10,27 +10,38 @@ export const AuthProvider = ({ children }) => {
 
   const checkSession = async () => {
     try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
       const response = await fetch('http://localhost:5000/api/check_session', {
         method: 'GET',
-        credentials: 'include',
         headers: {
+          'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
       });
 
       const data = await response.json();
       
       if (data.logged_in) {
         setUser({
-          id: data.user_id,
-          username: data.username
+          id: data.user.id,
+          username: data.user.username,
+          isAdmin: data.user.is_admin
         });
       } else {
+        localStorage.removeItem('token');
         setUser(null);
       }
     } catch (error) {
       console.error('Session check error:', error);
+      localStorage.removeItem('token');
       setUser(null);
     } finally {
       setLoading(false);
@@ -43,10 +54,6 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     try {
-      if (!email || !password) {
-        throw new Error('Email and password are required');
-      }
-
       const response = await fetch('http://localhost:5000/api/login', {
         method: 'POST',
         headers: {
@@ -59,57 +66,25 @@ export const AuthProvider = ({ children }) => {
 
       const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Login failed');
-      }
-
-      if (data.logged_in) {
+      if (data.success) {
         setUser({
-          id: data.user_id,
-          username: data.username
+          id: data.user.id,
+          username: data.user.username,
+          isAdmin: data.user.is_admin
         });
         navigate('/');
-        return { success: true };
+        return data;
       } else {
-        throw new Error('Login failed');
+        throw new Error(data.message || 'Login failed');
       }
     } catch (error) {
       console.error('Login error:', error);
-      return { success: false, error: error.message };
-    }
-  };
-
-  const logout = async () => {
-    try {
-      const response = await fetch('http://localhost:5000/api/logout', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('Logout failed');
-      }
-
-      setUser(null);
-      navigate('/login');
-    } catch (error) {
-      console.error('Logout error:', error);
-      // Even if the server request fails, clear the user state
-      setUser(null);
-      navigate('/login');
+      throw error;
     }
   };
 
   const register = async (username, email, password) => {
     try {
-      if (!username || !email || !password) {
-        throw new Error('Username, email and password are required');
-      }
-
       const response = await fetch('http://localhost:5000/api/register', {
         method: 'POST',
         headers: {
@@ -122,15 +97,38 @@ export const AuthProvider = ({ children }) => {
 
       const data = await response.json();
 
-      if (!response.ok) {
+      if (data.message === 'Registration successful!') {
+        // Log in the user after successful registration
+        await login(email, password);
+      } else {
         throw new Error(data.message || 'Registration failed');
       }
-
-      // After successful registration, log the user in
-      return await login(email, password);
     } catch (error) {
       console.error('Registration error:', error);
-      return { success: false, error: error.message };
+      throw error;
+    }
+  };
+
+  const logout = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        await fetch('http://localhost:5000/api/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          credentials: 'include'
+        });
+      }
+      localStorage.removeItem('token');
+      setUser(null);
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+      throw error;
     }
   };
 
@@ -138,13 +136,14 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     login,
+    register,
     logout,
-    register
+    isAdmin: user?.isAdmin || false
   };
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      {!loading && children}
     </AuthContext.Provider>
   );
 };

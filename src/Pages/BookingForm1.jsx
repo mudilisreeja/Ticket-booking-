@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { cities, priceMatrix } from '../data/cities';
-import PaymentModal from '../Components/PaymentModal';
+import { PaymentModal } from '../Components/PaymentModal1';
 
 const BookingForm = () => {
   const navigate = useNavigate();
