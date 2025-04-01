@@ -11,6 +11,9 @@ import secrets
 import os
 from price_data import priceMatrix
 from functools import wraps
+import jwt
+import requests
+from sqlalchemy import func
 
 app = Flask(__name__)
 
@@ -24,11 +27,12 @@ def login_required(f):
     return decorated_function
 
 # Configure CORS
-CORS(app, 
-     origins=["http://localhost:5173"],
-     supports_credentials=True,
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "X-Requested-With"])
+CORS(app, resources={r"/api/*": {
+    "origins": ["http://localhost:5173"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization", "Accept"],
+    "supports_credentials": True
+}})
 
 # Configure CORS headers for all responses
 @app.after_request
@@ -54,13 +58,65 @@ app.config['SESSION_COOKIE_DOMAIN'] = None
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 
+# Keycloak configuration
+KEYCLOAK_URL = "http://localhost:8080"
+KEYCLOAK_REALM = "bus-booking"
+KEYCLOAK_CLIENT_ID = "bus-booking-client"
+KEYCLOAK_CLIENT_SECRET = "4Y9SXmvITYBXj5yRGhVvZF5JZqiOxqtD"  # Replace with your actual client secret
+
+def get_keycloak_public_key():
+    try:
+        response = requests.get(f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/.well-known/openid-configuration")
+        if response.status_code != 200:
+            print(f"Failed to get openid configuration: {response.status_code}")
+            return None
+            
+        openid_config = response.json()
+        jwks_uri = openid_config['jwks_uri']
+        
+        response = requests.get(jwks_uri)
+        if response.status_code != 200:
+            print(f"Failed to get JWKS: {response.status_code}")
+            return None
+            
+        return response.json()["keys"][0]["n"]
+    except Exception as e:
+        print(f"Error getting public key: {str(e)}")
+        return None
+
+def verify_token(token):
+    try:
+        public_key = get_keycloak_public_key()
+        if not public_key:
+            print("Failed to get public key")
+            return None
+            
+        decoded = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=KEYCLOAK_CLIENT_ID,
+            issuer=f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}"
+        )
+        return decoded
+    except Exception as e:
+        print(f"Token verification error: {str(e)}")
+        return None
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'is_admin' not in session or not session['is_admin']:
+            return jsonify({"message": "Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
 # Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-
     bookings = db.relationship('Booking', backref='user', lazy=True)
     
 
@@ -123,9 +179,8 @@ def register():
 def login():
     try:
         data = request.get_json()
-        
-        if not data:
-            return jsonify({"message": "No data provided"}), 400
+        if not data or 'email' not in data or 'password' not in data:
+            return jsonify({"message": "Email and password are required!"}), 400
 
         email = data.get('email')
         password = data.get('password')
@@ -133,22 +188,37 @@ def login():
         if not email or not password:
             return jsonify({"message": "Email and password are required"}), 400
 
+        # Regular user authentication
         user = User.query.filter_by(email=email).first()
-
         if not user or not bcrypt.check_password_hash(user.password, password):
-            return jsonify({"message": "Invalid email or password"}), 401
+            return jsonify({
+                "success": False,
+                "message": "Invalid email or password"
+            }), 401
+
+        # Check if this is the admin email
+        ADMIN_EMAIL = "sreeja.mudili@gmail.com"  # Admin email
+        is_admin = email == ADMIN_EMAIL
 
         session['user_id'] = user.id
+        session['is_admin'] = is_admin
         
         return jsonify({
-            "logged_in": True,
-            "user_id": user.id,
-            "username": user.username
+            "success": True,
+            "message": "Login successful",
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "is_admin": is_admin
+            }
         }), 200
 
     except Exception as e:
         print(f"Login error: {str(e)}")
-        return jsonify({"message": "An error occurred during login"}), 500
+        return jsonify({
+            "success": False,
+            "message": "Login failed!"
+        }), 500
 
 @app.route('/api/check_session', methods=['GET'])
 def check_session():
@@ -530,6 +600,143 @@ def confirm_payment():
         db.session.rollback()
         print(f"Payment confirmation error: {str(e)}")
         return jsonify({'message': 'Failed to confirm payment'}), 500
+
+@app.route('/api/admin', methods=['GET'])
+@admin_required
+def admin_dashboard():
+    try:
+        # Get total bookings and revenue
+        total_bookings = Booking.query.count()
+        total_revenue = db.session.query(func.sum(Booking.total_price)).scalar() or 0
+
+        # Get route statistics
+        route_stats = db.session.query(
+            Booking.starts_from,
+            Booking.destination,
+            func.count(Booking.id).label('total_bookings'),
+            func.sum(Booking.total_price).label('revenue')
+        ).group_by(Booking.starts_from, Booking.destination).all()
+
+        # Format route stats
+        formatted_route_stats = []
+        for route in route_stats:
+            formatted_route_stats.append({
+                'route': f"{route.starts_from} → {route.destination}",
+                'totalBookings': route.total_bookings,
+                'revenue': float(route.revenue or 0),
+                'occupancy': 100  # You can calculate this based on your bus capacity
+            })
+
+        # Get recent bookings
+        recent_bookings = Booking.query.order_by(Booking.booking_date.desc()).limit(10).all()
+        formatted_recent_bookings = []
+        for booking in recent_bookings:
+            formatted_recent_bookings.append({
+                'id': booking.id,
+                'username': booking.user.username,
+                'starts_from': booking.starts_from,
+                'destination': booking.destination,
+                'travel_date': booking.travel_date.strftime('%Y-%m-%d'),
+                'total_price': float(booking.total_price),
+                'status': booking.status
+            })
+
+        return jsonify({
+            'totalBookings': total_bookings,
+            'totalRevenue': float(total_revenue),
+            'routeStats': formatted_route_stats,
+            'recentBookings': formatted_recent_bookings
+        })
+
+    except Exception as e:
+        print(f"Error getting admin dashboard data: {str(e)}")
+        return jsonify({"message": "Failed to get admin dashboard data"}), 500
+
+@app.route('/api/admin/stats', methods=['GET'])
+@admin_required
+def get_admin_stats():
+    try:
+        # Get total bookings and revenue
+        total_bookings = Booking.query.count()
+        total_revenue = db.session.query(func.sum(Booking.total_price)).scalar() or 0
+
+        # Get route statistics
+        route_stats = db.session.query(
+            Booking.starts_from,
+            Booking.destination,
+            func.count(Booking.id).label('total_bookings'),
+            func.sum(Booking.total_price).label('revenue')
+        ).group_by(Booking.starts_from, Booking.destination).all()
+
+        # Format route stats
+        formatted_route_stats = []
+        for route in route_stats:
+            formatted_route_stats.append({
+                'route': f"{route.starts_from} → {route.destination}",
+                'totalBookings': route.total_bookings,
+                'revenue': float(route.revenue or 0),
+                'occupancy': 100  # You can calculate this based on your bus capacity
+            })
+
+        # Get recent bookings
+        recent_bookings = Booking.query.order_by(Booking.booking_date.desc()).limit(10).all()
+        formatted_recent_bookings = []
+        for booking in recent_bookings:
+            formatted_recent_bookings.append({
+                'id': booking.id,
+                'username': booking.user.username,
+                'starts_from': booking.starts_from,
+                'destination': booking.destination,
+                'travel_date': booking.travel_date.strftime('%Y-%m-%d'),
+                'total_price': float(booking.total_price),
+                'status': booking.status
+            })
+
+        return jsonify({
+            'totalBookings': total_bookings,
+            'totalRevenue': float(total_revenue),
+            'routeStats': formatted_route_stats,
+            'recentBookings': formatted_recent_bookings
+        })
+
+    except Exception as e:
+        print(f"Error getting admin stats: {str(e)}")
+        return jsonify({"message": "Failed to get admin statistics"}), 500
+
+@app.route('/api/admin/bookings', methods=['GET'])
+@admin_required
+def get_all_bookings():
+    try:
+        bookings = Booking.query.order_by(Booking.booking_date.desc()).all()
+        return jsonify([{
+            'id': booking.id,
+            'username': booking.user.username,
+            'starts_from': booking.starts_from,
+            'destination': booking.destination,
+            'travel_date': booking.travel_date.strftime('%Y-%m-%d'),
+            'total_price': float(booking.total_price),
+            'status': booking.status
+        } for booking in bookings])
+    except Exception as e:
+        print(f"Error getting all bookings: {str(e)}")
+        return jsonify({"message": "Failed to get bookings"}), 500
+
+@app.route('/api/admin/bookings/<int:booking_id>/status', methods=['PUT'])
+@admin_required
+def update_booking_status(booking_id):
+    try:
+        data = request.get_json()
+        if not data or 'status' not in data:
+            return jsonify({"message": "Status is required"}), 400
+
+        booking = Booking.query.get_or_404(booking_id)
+        booking.status = data['status']
+        db.session.commit()
+
+        return jsonify({"message": "Booking status updated successfully"})
+    except Exception as e:
+        print(f"Error updating booking status: {str(e)}")
+        return jsonify({"message": "Failed to update booking status"}), 500
 
 if __name__ == '__main__':
     print("Database absolute path:", os.path.abspath('newtb.db'))
